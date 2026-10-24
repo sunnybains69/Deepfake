@@ -1,3 +1,4 @@
+
 from pathlib import Path
 import tempfile
 
@@ -10,15 +11,17 @@ from src.predict_video import predict_video
 from src.utils import get_device
 
 
-MODEL_PATH = "models/best_model.pth"
+# New face-based EfficientNet-B0 model
+MODEL_PATH = "models/best_model_faces.pth"
 
 
 st.set_page_config(
     page_title="Sunny's Deepfake Detection Program",
     page_icon="🔎",
-layout="wide",
-initial_sidebar_state="expanded",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
+
 
 # --------------------------------------------------
 # Sidebar
@@ -30,7 +33,7 @@ with st.sidebar:
     st.write("**Researcher:** Sangeet Bains")
     st.write("**Programme:** MSc Cyber Security and Digital Forensics")
     st.write("**Institution:** University of Westminster")
-    st.write("**Model:** EfficientNet-B0")
+    st.write("**Model:** EfficientNet-B0 (Face-Based)")
     st.write("**Output:** Real or Fake")
 
     st.divider()
@@ -57,67 +60,61 @@ with st.sidebar:
 
     st.warning(
         "This application is a research prototype. "
-        "It's predictions should not be treated as forensic proof."
+        "Its predictions should not be treated as forensic proof."
     )
 
 
-# -------------------------------------------------
+# --------------------------------------------------
 # Page Heading
-# -------------------------------------------------
-
-
+# --------------------------------------------------
 
 st.title("AI-Based Deepfake Detection Program")
-st.subheader("MSc Cyber Security and Forensics")
+st.subheader("MSc Cyber Security and Digital Forensics")
+
 st.caption(
     "Developed by Sunny Bains - University of Westminster."
 )
 
 st.info(
-"Upload an image or video containing a visible face. "
-"The system will estimate whether the media is authentic "
-"or potentially manipulated."
+    "Upload an image or video containing a visible face. "
+    "The system will detect and crop the face before estimating "
+    "whether the media is authentic or potentially manipulated."
 )
 
 
-# ------------------------------------------------
+# --------------------------------------------------
 # Check Model
-# ------------------------------------------------
-
+# --------------------------------------------------
 
 model_file = Path(MODEL_PATH)
 
 if not model_file.exists():
     st.error(
-        "No trained model was found at models/best_model.pth. "
-        "Train the model before running the interface."
+        f"No trained model was found at {MODEL_PATH}. "
+        "Check that the model file exists."
     )
     st.stop()
 
 
-# -----------------------------------------------
-# Load model
-# -----------------------------------------------
+# --------------------------------------------------
+# Load Model
+# --------------------------------------------------
+
+@st.cache_resource
+def get_model(model_path):
+    device = get_device()
+    model, checkpoint = load_model(model_path, device)
+    model.eval()
+    return model, checkpoint, device
 
 
-device = get_device()
-
-model, checkpoint = load_model(
-    str(model_file),
-    device,
-)
-
+model, checkpoint, device = get_model(str(model_file))
 class_to_idx = checkpoint["class_to_idx"]
 
 
-# ------------------------------------------------
-# Select media
-# ------------------------------------------------
-
-
-device = get_device()
-model, checkpoint = load_model(str(model_file), device)
-class_to_idx = checkpoint["class_to_idx"]
+# --------------------------------------------------
+# Select Media
+# --------------------------------------------------
 
 mode = st.radio(
     "Select media type",
@@ -125,40 +122,64 @@ mode = st.radio(
     horizontal=True,
 )
 
-# ------------------------------------------------
-# Image analysis
-# ------------------------------------------------
 
+# --------------------------------------------------
+# Image Analysis
+# --------------------------------------------------
 
 if mode == "Image":
+
     uploaded = st.file_uploader(
         "Upload a face image",
         type=["jpg", "jpeg", "png", "webp"],
-	help="Supported formats: JPG, JPEG, PNG and WEBP.",
+        help="Supported formats: JPG, JPEG, PNG and WEBP.",
     )
 
     if uploaded is not None:
-        image = Image.open(uploaded).convert("RGB")
-        st.image(image, caption="Uploaded image")
 
-        result = predict_pil_image(
+        image = Image.open(uploaded).convert("RGB")
+
+        st.image(
             image,
-            model,
-            class_to_idx,
-            device,
+            caption="Uploaded image",
         )
+
+        with st.spinner("Detecting face and analysing image..."):
+            try:
+                result = predict_pil_image(
+                    image,
+                    model,
+                    class_to_idx,
+                    device,
+                    crop_faces=True,
+                )
+            except ValueError as error:
+                st.error(str(error))
+                st.stop()
 
         st.subheader(
             f"Prediction: {result['prediction'].upper()}"
         )
-        st.metric(
-            "Fake probability",
-            f"{result.get('fake', 0.0) * 100:.2f}%",
-        )
-        st.metric(
-            "Real probability",
-            f"{result.get('real', 0.0) * 100:.2f}%",
-        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.metric(
+                "Fake probability",
+                f"{result['fake'] * 100:.2f}%",
+            )
+
+        with col2:
+            st.metric(
+                "Real probability",
+                f"{result['real'] * 100:.2f}%",
+            )
+
+
+
+# --------------------------------------------------
+# Video Analysis
+# --------------------------------------------------
 
 else:
     uploaded = st.file_uploader(
@@ -167,43 +188,88 @@ else:
     )
 
     if uploaded is not None:
-        suffix = Path(uploaded.name).suffix
-
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=suffix,
-        ) as temporary_file:
-            temporary_file.write(uploaded.read())
-            temporary_path = temporary_file.name
-
         st.video(uploaded)
 
-        with st.spinner("Analysing sampled frames..."):
-            result = predict_video(
-                video_path=temporary_path,
-                model_path=MODEL_PATH,
-                sample_every=15,
-                max_frames=60,
+        suffix = Path(uploaded.name).suffix
+        temporary_path = None
+        result = None
+
+        try:
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=suffix,
+            ) as temporary_file:
+                temporary_file.write(uploaded.getvalue())
+                temporary_path = temporary_file.name
+
+            with st.spinner(
+                "Detecting faces and analysing video frames..."
+            ):
+                result = predict_video(
+                    video_path=temporary_path,
+                    model_path=MODEL_PATH,
+                    sample_every=sample_every,
+                    max_frames=max_frames,
+                    crop_faces=True,
+                )
+
+        except (ValueError, RuntimeError) as error:
+            st.error(f"Video analysis failed: {error}")
+
+        finally:
+            if temporary_path is not None:
+                Path(temporary_path).unlink(missing_ok=True)
+
+        if result is not None:
+            prediction = result["prediction"].upper()
+
+            if prediction == "UNCERTAIN":
+                st.warning(
+                    "Prediction: UNCERTAIN - the model cannot "
+                    "reliably determine whether this video "
+                    "is REAL or FAKE."
+                )
+            elif prediction == "FAKE":
+                st.error("Prediction: FAKE")
+            elif prediction == "REAL":
+                st.success("Prediction: REAL")
+            else:
+                st.warning(f"Prediction: {prediction}")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.metric(
+                    "Fake probability",
+                    f"{result['fake_probability'] * 100:.2f}%",
+                )
+
+            with col2:
+                st.metric(
+                    "Real probability",
+                    f"{result['real_probability'] * 100:.2f}%",
+                )
+
+            st.write(
+                f"Frames analysed: {result['sampled_frames']}"
             )
 
-        st.subheader(
-            f"Prediction: {result['prediction'].upper()}"
-        )
-        st.metric(
-            "Fake probability",
-            f"{result['fake_probability'] * 100:.2f}%",
-        )
-        st.metric(
-            "Real probability",
-            f"{result['real_probability'] * 100:.2f}%",
-        )
-        st.write(
-            f"Frames sampled: {result['sampled_frames']}"
-        )
+            if "skipped_frames" in result:
+                st.write(
+                    "Frames skipped (no face detected): "
+                    f"{result['skipped_frames']}"
+                )
+
+# --------------------------------------------------
+# Limitations
+# --------------------------------------------------
 
 st.divider()
+
 st.write(
-    "Limitations: performance depends on the training data and may "
-    "degrade on unseen manipulation methods, compressed media, "
-    "different demographics, or non-face content."
+    "Limitations: This research prototype may incorrectly classify "
+    "genuine or manipulated media. Performance depends on the "
+    "training dataset, face visibility, image quality, compression, "
+    "and manipulation method. Model probabilities are not "
+    "calibrated forensic confidence scores."
 )
