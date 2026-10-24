@@ -4,5 +4,5 @@ numpy
 Pillow
 scikit-learn
 streamlit
-opencv-python
+opencv-python-headless
 tqdm
