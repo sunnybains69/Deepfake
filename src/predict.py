@@ -1,3 +1,5 @@
+import cv2
+import numpy as np
 import argparse
 from pathlib import Path
 
@@ -9,21 +11,106 @@ from .model import load_model
 from .utils import get_device
 
 
+def crop_face(image: Image.Image) -> Image.Image | None:
+    """
+    Detect and crop the largest face using the same
+    settings as prepare_dataset_faces.py.
+    """
+
+    rgb = np.array(image.convert("RGB"))
+
+    gray = cv2.cvtColor(
+        rgb,
+        cv2.COLOR_RGB2GRAY
+    )
+
+    cascade_path = (
+        cv2.data.haarcascades
+        + "haarcascade_frontalface_default.xml"
+    )
+
+    detector = cv2.CascadeClassifier(cascade_path)
+
+    if detector.empty():
+        raise RuntimeError(
+            "Could not load OpenCV face detector."
+        )
+
+    faces = detector.detectMultiScale(
+        gray,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=(40, 40)
+    )
+
+    if len(faces) == 0:
+        return None
+
+    # Select the largest detected face
+    x, y, w, h = max(
+        faces,
+        key=lambda face: face[2] * face[3]
+    )
+
+    # Same 25% margin used during training
+    margin = int(max(w, h) * 0.25)
+
+    height, width = rgb.shape[:2]
+
+    x1 = max(0, x - margin)
+    y1 = max(0, y - margin)
+    x2 = min(width, x + w + margin)
+    y2 = min(height, y + h + margin)
+
+    face = rgb[y1:y2, x1:x2]
+
+    if face.size == 0:
+        return None
+
+    # Resize using the same OpenCV interpolation
+    face = cv2.resize(
+        face,
+        (224, 224),
+        interpolation=cv2.INTER_AREA
+    )
+
+    return Image.fromarray(face)
+
 def predict_pil_image(
     image: Image.Image,
     model,
     class_to_idx: dict,
     device: torch.device,
+    crop_faces: bool = False,
 ) -> dict:
+
+    if crop_faces:
+        cropped = crop_face(image)
+
+        if cropped is None:
+            raise ValueError(
+                "No face detected in the image."
+            )
+
+        image = cropped
+
     transform = get_transforms(train=False)
-    tensor = transform(image.convert("RGB")).unsqueeze(0).to(device)
+
+    tensor = (
+        transform(image.convert("RGB"))
+        .unsqueeze(0)
+        .to(device)
+    )
 
     with torch.no_grad():
         logits = model(tensor)
-        probabilities = torch.softmax(logits, dim=1)[0].cpu()
+        probabilities = torch.softmax(
+            logits, dim=1
+        )[0].cpu()
 
     idx_to_class = {
-        index: name for name, index in class_to_idx.items()
+        index: name
+        for name, index in class_to_idx.items()
     }
 
     result = {
@@ -32,6 +119,7 @@ def predict_pil_image(
     }
 
     predicted_index = int(probabilities.argmax().item())
+
     result["prediction"] = idx_to_class[predicted_index]
 
     return result
