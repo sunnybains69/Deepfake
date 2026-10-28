@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import argparse
+from functools import lru_cache
 from pathlib import Path
 
 import torch
@@ -11,19 +12,9 @@ from .model import load_model
 from .utils import get_device
 
 
-def crop_face(image: Image.Image) -> Image.Image | None:
-    """
-    Detect and crop the largest face using the same
-    settings as prepare_dataset_faces.py.
-    """
-
-    rgb = np.array(image.convert("RGB"))
-
-    gray = cv2.cvtColor(
-        rgb,
-        cv2.COLOR_RGB2GRAY
-    )
-
+@lru_cache(maxsize=1)
+def _get_face_detector() -> cv2.CascadeClassifier:
+    """Load the Haar cascade once and reuse it for every frame."""
     cascade_path = (
         cv2.data.haarcascades
         + "haarcascade_frontalface_default.xml"
@@ -35,6 +26,27 @@ def crop_face(image: Image.Image) -> Image.Image | None:
         raise RuntimeError(
             "Could not load OpenCV face detector."
         )
+
+    return detector
+
+
+def crop_face(image: Image.Image) -> Image.Image | None:
+    """
+    Detect and crop the largest face.
+
+    This single function is used both when building the
+    training dataset (prepare_split.py) and at inference,
+    so training and test crops are produced identically.
+    """
+
+    rgb = np.array(image.convert("RGB"))
+
+    gray = cv2.cvtColor(
+        rgb,
+        cv2.COLOR_RGB2GRAY
+    )
+
+    detector = _get_face_detector()
 
     faces = detector.detectMultiScale(
         gray,
@@ -132,7 +144,12 @@ def main():
     parser.add_argument("--image", required=True)
     parser.add_argument(
         "--model-path",
-        default="models/best_model.pth",
+        default="models/best_model_faces.pth",
+    )
+    parser.add_argument(
+        "--no-crop-faces",
+        action="store_true",
+        help="Disable face detection and cropping.",
     )
     args = parser.parse_args()
 
@@ -149,6 +166,7 @@ def main():
             model,
             checkpoint["class_to_idx"],
             device,
+            crop_faces=not args.no_crop_faces,
         )
 
     print(f"Prediction: {result['prediction'].upper()}")
