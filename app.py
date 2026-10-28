@@ -211,6 +211,9 @@ else:
                     sample_every=sample_every,
                     max_frames=max_frames,
                     crop_faces=True,
+                    model=model,
+                    checkpoint=checkpoint,
+                    device=device,
                 )
 
         except (ValueError, RuntimeError) as error:
@@ -240,25 +243,36 @@ else:
 
             with col1:
                 st.metric(
-                    "Fake probability",
+                    "Video fake score",
                     f"{result['fake_probability'] * 100:.2f}%",
                 )
 
             with col2:
                 st.metric(
-                    "Real probability",
-                    f"{result['real_probability'] * 100:.2f}%",
+                    "Decision threshold",
+                    f"{result['threshold'] * 100:.2f}%",
+                )
+
+            if not result["threshold_calibrated"]:
+                st.caption(
+                    "Threshold is the uncalibrated default (50%). "
+                    "Run calibrate_threshold.py for a validated one."
                 )
 
             st.write(
                 f"Frames analysed: {result['sampled_frames']}"
             )
 
-            if "skipped_frames" in result:
-                st.write(
-                    "Frames skipped (no face detected): "
-                    f"{result['skipped_frames']}"
-                )
+            st.write(
+                "Frames skipped (no face detected): "
+                f"{result['skipped_faces']}"
+            )
+
+            st.line_chart(
+                result["frame_fake_probabilities"],
+                x_label="Analysed frame",
+                y_label="Fake probability",
+            )
 
 # --------------------------------------------------
 # Limitations
